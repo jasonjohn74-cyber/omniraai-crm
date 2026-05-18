@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OmniraAI — CRM & Leads</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#05080f;color:#cfe0f5;}
+input,select,textarea,button{font-family:inherit;}
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:#1a3055;border-radius:3px;}
+@keyframes spin{to{transform:rotate(360deg);}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:none;}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/htm@3/dist/htm.js"></script>
+<script>
+const{useState,useEffect}=React;
+const html=htm.bind(React.createElement);
+
+const SB_URL='https://vchtdsfrryxnvceierkn.supabase.co';
+const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZjaHRkc2Zycnl4bnZjZWllcmtuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0ODcyMTYsImV4cCI6MjA5NDA2MzIxNn0.VuPuPqCbVYlxNpeTulkKK-IMezzxg3C05c4kWn3evqo';
+const SBH={'apikey':SB_KEY,'Authorization':`Bearer ${SB_KEY}`,'Content-Type':'application/json'};
+const N8N_PROXY='https://n8n-y8wq-production.up.railway.app/webhook/claude-proxy';
+const N8N_EMAIL='https://n8n-y8wq-production.up.railway.app/webhook/send-email';
+
+const db={
+  async getSetting(k){try{const r=await fetch(`${SB_URL}/rest/v1/settings?key=eq.${k}&select=value`,{headers:SBH});const d=await r.json();return d[0]?.value||null;}catch{return null;}},
+  async setSetting(k,v){try{await fetch(`${SB_URL}/rest/v1/settings`,{method:'POST',headers:{...SBH,'Prefer':'resolution=merge-duplicates'},body:JSON.stringify({key:k,value:v,updated_at:new Date().toISOString()})});}catch(e){console.error(e);}},
+  async getClients(){try{const r=await fetch(`${SB_URL}/rest/v1/clients?select=*&order=created_at.desc`,{headers:SBH});const d=await r.json();return Array.isArray(d)?d.map(x=>x.data).filter(Boolean):[];}catch{return[];}},
+  async getCampaigns(){try{const r=await fetch(`${SB_URL}/rest/v1/campaigns?select=*&order=created_at.desc`,{headers:SBH});const d=await r.json();return Array.isArray(d)?d.map(x=>x.data).filter(Boolean):[];}catch{return[];}},
+  async getContacts(){try{const r=await fetch(`${SB_URL}/rest/v1/contacts?select=*&order=created_at.desc`,{headers:SBH});const d=await r.json();return Array.isArray(d)?d.map(x=>x.data).filter(Boolean):[];}catch{return[];}},
+  async upsertContact(c){try{await fetch(`${SB_URL}/rest/v1/contacts`,{method:'POST',headers:{...SBH,'Prefer':'resolution=merge-duplicates'},body:JSON.stringify({id:c.id,updated_at:c.updatedAt,client_id:c.clientId||null,stage:c.stage,score:c.score,data:c})});}catch(e){console.error(e);}},
+  async deleteContact(id){try{await fetch(`${SB_URL}/rest/v1/contacts?id=eq.${id}`,{method:'DELETE',headers:SBH});}catch(e){console.error(e);}},
+};
+
+const C={bg:'#05080f',s1:'#0a1020',s2:'#0e1830',s3:'#13213e',s4:'#071526',bd:'#17304e',bdB:'#1d4070',ac:'#4a86f5',tx:'#cfe0f5',dm:'#5a8ab0',mt:'#274466',ok:'#34d399',wn:'#fbbf24',er:'#f87171',pu:'#a78bfa',tl:'#2dd4bf',or:'#fb923c'};
+const inp=(ex={})=>({background:C.s2,border:`0.5px solid ${C.bd}`,borderRadius:6,color:C.tx,padding:'8px 11px',fontSize:13,width:'100%',outline:'none',...ex});
+const pbtn=(on,ex={})=>({background:on?C.ac:'transparent',color:on?'#fff':C.tx,border:on?'none':`0.5px solid ${C.bd}`,borderRadius:6,padding:'7px 14px',fontSize:13,cursor:'pointer',...ex});
+const uid=()=>Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-4);
+const now=()=>new Date().toISOString();
+const fmtd=d=>d?new Date(d).toLocaleDateString('en-MY',{day:'numeric',month:'short',year:'numeric'}):'—';
+const fmtdt=d=>d?new Date(d).toLocaleString('en-MY',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'—';
+const fmtrel=d=>{if(!d)return'Never';const s=Math.floor((Date.now()-new Date(d))/1000);if(s<60)return'Just now';if(s<3600)return`${Math.floor(s/60)}m ago`;if(s<86400)return`${Math.floor(s/3600)}h ago`;if(s<604800)return`${Math.floor(s/86400)}d ago`;return fmtd(d);};
+
+const STAGES=['lead','qualified','proposal','active','churned'];
+const STAGE_META={lead:{l:'Lead',c:C.dm,bg:'#27446620'},qualified:{l:'Qualified',c:C.ac,bg:'#4a86f515'},proposal:{l:'Proposal',c:C.pu,bg:'#a78bfa15'},active:{l:'Active',c:C.ok,bg:'#34d39915'},churned:{l:'Churned',c:C.er,bg:'#f8717115'}};
+const SCORES=['cold','warm','hot','vip'];
+const SCORE_META={cold:{l:'Cold',c:C.dm,icon:'🧊'},warm:{l:'Warm',c:C.wn,icon:'🔥'},hot:{l:'Hot',c:C.or,icon:'🚨'},vip:{l:'VIP',c:C.pu,icon:'⭐'}};
+const SOURCES=['Instagram DM','Facebook Ad','TikTok','WhatsApp','Referral','Walk-in','Email','Shopee','Lazada','LinkedIn','Website','Other'];
+const ACTIVITY_TYPES=['Note','Call','Email','WhatsApp','Meeting'];
+const ACTIVITY_ICONS={Note:'📝',Call:'📞',Email:'📧',WhatsApp:'💬',Meeting:'🤝'};
+
+function blankContact(){
+  return {id:uid(),createdAt:now(),updatedAt:now(),clientId:'',clientName:'',campaignId:'',campaignName:'',name:'',email:'',phone:'',company:'',source:'',stage:'lead',score:'cold',dealValue:'',notes:'',tags:[],activities:[],lastContactedAt:null,scoreReason:''};
+}
+
+function StageBadge({stage,size='sm'}){const m=STAGE_META[stage]||STAGE_META.lead;return html`<span style=${{background:m.bg,color:m.c,border:`0.5px solid ${m.c}50`,borderRadius:20,padding:size==='lg'?'4px 14px':'2px 10px',fontSize:size==='lg'?12:11,fontWeight:500,whiteSpace:'nowrap'}}>${m.l}</span>`;}
+function ScoreBadge({score}){const m=SCORE_META[score]||SCORE_META.cold;return html`<span style=${{background:`${m.c}15`,color:m.c,border:`0.5px solid ${m.c}40`,borderRadius:20,padding:'2px 9px',fontSize:11,fontWeight:500,whiteSpace:'nowrap'}}>${m.icon} ${m.l}</span>`;}
+function Lb({children}){return html`<div style=${{fontSize:11,color:C.dm,textTransform:'uppercase',letterSpacing:'0.8px',marginBottom:5}}>${children}</div>`;}
+function Fd({label,span2,req,children}){return html`<div style=${{gridColumn:span2?'span 2':'span 1'}}><div style=${{fontSize:11,color:C.dm,textTransform:'uppercase',letterSpacing:'0.8px',marginBottom:5,display:'flex',gap:4}}>${label}${req&&html`<span style=${{color:C.er}}>*</span>`}</div>${children}</div>`;}
+function Card({style={},children}){return html`<div style=${{background:C.s1,border:`0.5px solid ${C.bd}`,borderRadius:10,...style}}>${children}</div>`;}
+function Sec({t,children,action}){return html`<div style=${{marginBottom:20}}><div style=${{fontSize:11,color:C.ac,textTransform:'uppercase',letterSpacing:'1px',marginBottom:11,paddingBottom:7,borderBottom:`0.5px solid ${C.bd}`,display:'flex',justifyContent:'space-between',alignItems:'center'}}><span>${t}</span>${action||''}</div>${children}</div>`;}
+function Spinner(){return html`<div style=${{display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'40px',color:C.dm,fontSize:13}}><div style=${{width:18,height:18,border:`2px solid ${C.bd}`,borderTop:`2px solid ${C.ac}`,borderRadius:'50%',animation:'spin 0.8s linear infinite'}}></div>Loading…</div>`;}
+
+function App(){
+  const[locked,setLocked]=useState(true);
+  const[pin,setPin]=useState('');const[pErr,setPErr]=useState('');const[savedPin,setSavedPin]=useState(null);const[pmode,setPmode]=useState('check');const[pin2,setPin2]=useState('');
+  const[clients,setClients]=useState([]);
+  const[campaigns,setCampaigns]=useState([]);
+  const[contacts,setContacts]=useState([]);
+  const[loading,setLoading]=useState(true);
+  const[view,setView]=useState('contacts');
+  const[form,setForm]=useState(null);
+  const[det,setDet]=useState(null);
+  const[srch,setSrch]=useState('');
+  const[filterClient,setFilterClient]=useState('all');
+  const[filterStage,setFilterStage]=useState('all');
+  const[filterScore,setFilterScore]=useState('all');
+  const[saving,setSaving]=useState(false);
+  const[scoring,setScoring]=useState(false);
+  const[toast,setToast]=useState('');const[toastType,setToastType]=useState('ok');
+  // blast state
+  const[blastClient,setBlastClient]=useState('');
+  const[blastStage,setBlastStage]=useState('all');
+  const[blastScore,setBlastScore]=useState('all');
+  const[blastSubject,setBlastSubject]=useState('');
+  const[blastBody,setBlastBody]=useState('');
+  const[blastFrom,setBlastFrom]=useState('');
+  const[blastSending,setBlastSending]=useState(false);
+  const[blastPreview,setBlastPreview]=useState(false);
+  // settings
+  const[resendKey,setResendKey]=useState('');
+  const[resendKeyInput,setResendKeyInput]=useState('');
+  const[senderEmail,setSenderEmail]=useState('');
+  const[senderName,setSenderName]=useState('');
+  // activity
+  const[actType,setActType]=useState('Note');
+  const[actNote,setActNote]=useState('');
+
+  useEffect(()=>{(async()=>{
+    const p=await db.getSetting('pin');if(p)setSavedPin(p);else setPmode('create');
+    const rk=await db.getSetting('resend_key');if(rk){setResendKey(rk);setResendKeyInput(rk);}
+    const se=await db.getSetting('sender_email');if(se)setSenderEmail(se);
+    const sn=await db.getSetting('sender_name');if(sn)setSenderName(sn);
+    const cl=await db.getClients();setClients(cl);
+    const ca=await db.getCampaigns();setCampaigns(ca);
+    const co=await db.getContacts();setContacts(co);
+    setLoading(false);
+  })();},[]);
+
+  const showToast=(msg,t='ok')=>{setToast(msg);setToastType(t);setTimeout(()=>setToast(''),3500);};
+  const sf=(f,v)=>setForm(p=>({...p,[f]:v}));
+
+  function doPin(){
+    if(pmode==='create'){if(pin.length<4){setPErr('Min 4 chars');return;}if(pin!==pin2){setPErr('PINs do not match');return;}db.setSetting('pin',pin);setSavedPin(pin);setLocked(false);}
+    else{if(pin===savedPin){setLocked(false);setPErr('');}else{setPErr('Incorrect PIN');setPin('');}}
+  }
+
+  function goBack(){
+    if(view==='detail'||view==='new'||view==='edit'){setView('contacts');setForm(null);setDet(null);}
+  }
+
+  function selectClient(id){
+    const c=clients.find(x=>x.id===id);
+    if(!c){sf('clientId','');sf('clientName','');return;}
+    sf('clientId',id);sf('clientName',c.basics.brandName||c.basics.clientName);
+  }
+
+  async function saveContact(){
+    if(!form.name.trim()){showToast('Contact name required','er');return;}
+    setSaving(true);
+    const record={...form,updatedAt:now()};
+    await db.upsertContact(record);
+    const co=await db.getContacts();setContacts(co);
+    setSaving(false);
+    if(view==='detail'){setDet(record);setView('detail');}
+    else{setView(det?'detail':'contacts');setForm(null);}
+    showToast(view==='new'?'Contact added ✓':'Changes saved ✓','ok');
+  }
+
+  async function deleteContact(id){
+    if(!confirm('Delete this contact? Cannot be undone.'))return;
+    await db.deleteContact(id);
+    const co=await db.getContacts();setContacts(co);
+    setView('contacts');setDet(null);setForm(null);
+    showToast('Contact deleted','ok');
+  }
+
+  async function updateStage(id,stage){
+    const c=contacts.find(x=>x.id===id);if(!c)return;
+    const updated={...c,stage,updatedAt:now()};
+    await db.upsertContact(updated);
+    const co=await db.getContacts();setContacts(co);
+    if(det?.id===id){setDet(co.find(x=>x.id===id));}
+    showToast(`Stage → ${STAGE_META[stage]?.l}`,'ok');
+  }
+
+  async function addActivity(){
+    if(!actNote.trim()){showToast('Add a note first','er');return;}
+    const act={id:uid(),type:actType,note:actNote,createdAt:now()};
+    const updated={...det,activities:[act,...(det.activities||[])],lastContactedAt:now(),updatedAt:now()};
+    await db.upsertContact(updated);
+    const co=await db.getContacts();setContacts(co);
+    setDet(co.find(x=>x.id===det.id));
+    setActNote('');
+    showToast('Activity logged ✓','ok');
+  }
+
+  async function scoreWithAI(){
+    if(!det)return;
+    setScoring(true);
+    const prompt=`You are a CRM analyst. Based on the contact information and activity below, assign a lead score.
+
+Contact: ${det.name}
+Company: ${det.company||'N/A'}
+Source: ${det.source||'Unknown'}
+Stage: ${STAGE_META[det.stage]?.l}
+Notes: ${det.notes||'None'}
+Recent activities: ${(det.activities||[]).slice(0,5).map(a=>`[${a.type}] ${a.note}`).join(' | ')||'None'}
+Deal value: ${det.dealValue||'Not specified'}
+
+Choose ONE score from: Cold, Warm, Hot, VIP
+- Cold: Not engaged, low intent, no response
+- Warm: Showing interest, some engagement
+- Hot: Actively interested, ready to buy soon
+- VIP: High-value, existing client or strong referral
+
+Reply in this exact format:
+SCORE: [Cold/Warm/Hot/VIP]
+REASON: [One sentence explanation]`;
+    try{
+      const res=await fetch(N8N_PROXY,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({system:'You are a CRM lead scoring analyst. Be concise and decisive.',prompt})});
+      const rawText=await res.text();
+      if(!rawText.trim())throw new Error('Empty response from AI');
+      const data=JSON.parse(rawText);
+      const text=(data?.content?.[0]?.text||data?.[0]?.content?.[0]?.text||data?.body?.content?.[0]?.text||'').trim();
+      const scoreMatch=text.match(/SCORE:\s*(Cold|Warm|Hot|VIP)/i);
+      const reasonMatch=text.match(/REASON:\s*(.+)/i);
+      if(scoreMatch){
+        const newScore=scoreMatch[1].toLowerCase();
+        const reason=reasonMatch?reasonMatch[1].trim():'';
+        const updated={...det,score:newScore,scoreReason:reason,updatedAt:now()};
+        await db.upsertContact(updated);
+        const co=await db.getContacts();setContacts(co);
+        setDet(co.find(x=>x.id===det.id));
+        showToast(`Scored: ${SCORE_META[newScore]?.icon} ${SCORE_META[newScore]?.l}`,'ok');
+      }else{showToast('Could not parse AI score — try again','wn');}
+    }catch(e){showToast('AI scoring failed: '+e.message,'er');}
+    setScoring(false);
+  }
+
+  const blastTargets=contacts.filter(c=>{
+    const matchClient=!blastClient||c.clientId===blastClient;
+    const matchStage=blastStage==='all'||c.stage===blastStage;
+    const matchScore=blastScore==='all'||c.score===blastScore;
+    return matchClient&&matchStage&&matchScore&&c.email;
+  });
+
+  async function sendBlast(){
+    if(!blastTargets.length){showToast('No contacts with email match this filter','er');return;}
+    if(!blastSubject.trim()||!blastBody.trim()){showToast('Subject and body required','er');return;}
+    if(!resendKey){showToast('Add Resend API key in Settings first','er');return;}
+    if(!senderEmail){showToast('Set sender email in Settings first','er');return;}
+    if(!confirm(`Send to ${blastTargets.length} contact${blastTargets.length>1?'s':''}?`))return;
+    setBlastSending(true);
+    try{
+      const res=await fetch(N8N_EMAIL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        resend_key:resendKey,
+        from_name:senderName||'OmniraAI',
+        from_email:senderEmail,
+        to:blastTargets.map(c=>c.email),
+        subject:blastSubject,
+        body_html:blastBody.replace(/\n/g,'<br/>'),
+      })});
+      const rawText=await res.text();
+      if(res.ok){showToast(`✓ Sent to ${blastTargets.length} contacts`,'ok');setBlastSubject('');setBlastBody('');}
+      else{showToast('Send failed — check n8n logs','er');}
+    }catch(e){showToast('Failed: '+e.message,'er');}
+    setBlastSending(false);
+  }
+
+  const filtered=contacts.filter(c=>{
+    const n=(c.name||'').toLowerCase()+(c.email||'').toLowerCase()+(c.company||'').toLowerCase();
+    return(filterClient==='all'||c.clientId===filterClient)&&(filterStage==='all'||c.stage===filterStage)&&(filterScore==='all'||c.score===filterScore)&&(!srch||n.includes(srch.toLowerCase()));
+  });
+
+  const stats={
+    total:contacts.length,
+    hot:contacts.filter(c=>c.score==='hot'||c.score==='vip').length,
+    active:contacts.filter(c=>c.stage==='active').length,
+    new:contacts.filter(c=>{const d=new Date(c.createdAt);return(Date.now()-d)<7*86400000;}).length,
+  };
+
+  const G={display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px 18px'};
+
+  // ── PIN ─────────────────────────────────────────────────────────
+  if(locked)return html`
+    <div style=${{minHeight:'100vh',background:C.bg,display:'flex',alignItems:'center',justifyContent:'center',padding:24}}>
+      <div style=${{background:C.s1,border:`0.5px solid ${C.bd}`,borderRadius:14,padding:40,width:'100%',maxWidth:360,textAlign:'center'}}>
+        <div style=${{width:60,height:60,borderRadius:16,background:`linear-gradient(135deg,${C.ok},${C.tl})`,display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 20px',fontSize:26}}>👥</div>
+        <div style=${{fontSize:24,fontWeight:700,color:C.tx}}>OmniraAI</div>
+        <div style=${{fontSize:13,color:C.dm,margin:'4px 0 28px'}}>CRM & Leads${pmode==='create'?' — Create PIN':''}</div>
+        <input style=${inp({marginBottom:10,textAlign:'center',letterSpacing:6,fontSize:20})} type="password" placeholder=${pmode==='create'?'Create PIN (min 4)':'Enter PIN'} value=${pin} onChange=${e=>setPin(e.target.value)} onKeyDown=${e=>e.key==='Enter'&&doPin()} autoFocus/>
+        ${pmode==='create'&&html`<input style=${inp({marginBottom:14,textAlign:'center',letterSpacing:6,fontSize:20})} type="password" placeholder="Confirm PIN" value=${pin2} onChange=${e=>setPin2(e.target.value)} onKeyDown=${e=>e.key==='Enter'&&doPin()}/>`}
+        ${pErr&&html`<div style=${{color:C.er,fontSize:12,marginBottom:12}}>${pErr}</div>`}
+        <button style=${pbtn(true,{width:'100%',padding:'11px 0',fontSize:15})} onClick=${doPin}>${pmode==='create'?'Create PIN & Enter →':'Unlock →'}</button>
+      </div>
+    </div>`;
+
+  // ── HEADER ──────────────────────────────────────────────────────
+  const hdr=html`
+    <div style=${{background:C.s1,borderBottom:`1px solid ${C.bd}`,padding:'0 24px',height:54,display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,zIndex:50}}>
+      <div style=${{display:'flex',alignItems:'center',gap:10}}>
+        <div style=${{width:30,height:30,borderRadius:8,background:`linear-gradient(135deg,${C.ok},${C.tl})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:14}}>👥</div>
+        <span style=${{fontSize:15,fontWeight:600,color:C.tx}}>OmniraAI</span>
+        <span style=${{fontSize:12,color:C.mt}}>/ CRM & Leads</span>
+        ${(view==='new'||view==='edit')&&html`<span style=${{fontSize:12,color:C.mt}}>/ ${view==='new'?'New Contact':'Edit: '+form?.name}</span>`}
+        ${view==='detail'&&det&&html`<span style=${{fontSize:12,color:C.mt}}>/ ${det.name}</span>`}
+      </div>
+      <div style=${{display:'flex',gap:4,alignItems:'center'}}>
+        ${(view==='new'||view==='edit')&&html`<button onClick=${goBack} style=${pbtn(false,{fontSize:12,padding:'5px 12px'})}>← Back</button>`}
+        ${view==='detail'&&html`<button onClick=${goBack} style=${pbtn(false,{fontSize:12,padding:'5px 12px'})}>← Back</button>`}
+        ${['contacts','pipeline','blast','settings'].map(v=>html`<button key=${v} onClick=${()=>setView(v)} style=${{...pbtn(view===v),fontSize:12,padding:'5px 12px',background:view===v?C.ac:'transparent'}}>
+          ${{contacts:'Contacts',pipeline:'Pipeline',blast:'📧 Blast',settings:'⚙'}[v]}
+        </button>`)}
+        ${(view==='contacts'||view==='pipeline')&&html`<button onClick=${()=>{setForm(blankContact());setView('new');}} style=${pbtn(true,{fontSize:12,padding:'5px 14px',fontWeight:500})}>+ Add Contact</button>`}
+      </div>
+    </div>`;
+
+  // ── CONTACT FORM ─────────────────────────────────────────────────
+  const contactForm=form&&html`
+    <div style=${{maxWidth:800,margin:'0 auto',padding:'24px'}}>
+      <div style=${{marginBottom:20}}><div style=${{fontSize:19,fontWeight:600,color:C.tx}}>${view==='new'?'New Contact':'Edit Contact'}</div></div>
+      <${Card} style=${{padding:24,marginBottom:14}}>
+        <${Sec} t="Contact details">
+          <div style=${G}>
+            <${Fd} label="Full name" req><input style=${inp()} value=${form.name} onChange=${e=>sf('name',e.target.value)} placeholder="e.g. Ahmad Farid"/></${Fd}>
+            <${Fd} label="Company"><input style=${inp()} value=${form.company} onChange=${e=>sf('company',e.target.value)} placeholder="Company name"/></${Fd}>
+            <${Fd} label="Email"><input style=${inp()} type="email" value=${form.email} onChange=${e=>sf('email',e.target.value)} placeholder="email@example.com"/></${Fd}>
+            <${Fd} label="Phone / WhatsApp"><input style=${inp()} value=${form.phone} onChange=${e=>sf('phone',e.target.value)} placeholder="+60 12-345 6789"/></${Fd}>
+          </div>
+        </${Sec}>
+        <${Sec} t="CRM classification">
+          <div style=${G}>
+            <${Fd} label="Client (whose lead is this?)">
+              <select style=${inp()} value=${form.clientId} onChange=${e=>selectClient(e.target.value)}>
+                <option value="">Select client…</option>
+                ${clients.map(c=>html`<option key=${c.id} value=${c.id}>${c.basics.brandName||c.basics.clientName}</option>`)}
+              </select>
+            </${Fd}>
+            <${Fd} label="Lead source">
+              <select style=${inp()} value=${form.source} onChange=${e=>sf('source',e.target.value)}>
+                <option value="">Select source…</option>
+                ${SOURCES.map(s=>html`<option key=${s} value=${s}>${s}</option>`)}
+              </select>
+            </${Fd}>
+            <${Fd} label="Stage">
+              <select style=${inp()} value=${form.stage} onChange=${e=>sf('stage',e.target.value)}>
+                ${STAGES.map(s=>html`<option key=${s} value=${s}>${STAGE_META[s].l}</option>`)}
+              </select>
+            </${Fd}>
+            <${Fd} label="Score">
+              <select style=${inp()} value=${form.score} onChange=${e=>sf('score',e.target.value)}>
+                ${SCORES.map(s=>html`<option key=${s} value=${s}>${SCORE_META[s].icon} ${SCORE_META[s].l}</option>`)}
+              </select>
+            </${Fd}>
+            <${Fd} label="Estimated deal value (RM)">
+              <input style=${inp()} value=${form.dealValue} onChange=${e=>sf('dealValue',e.target.value)} placeholder="e.g. 2000"/>
+            </${Fd}>
+            <${Fd} label="Campaign (optional)">
+              <select style=${inp()} value=${form.campaignId} onChange=${e=>{const ca=campaigns.find(x=>x.id===e.target.value);sf('campaignId',e.target.value);sf('campaignName',ca?.name||'');}}>
+                <option value="">No campaign</option>
+                ${(form.clientId?campaigns.filter(c=>c.clientId===form.clientId):campaigns).map(c=>html`<option key=${c.id} value=${c.id}>${c.name}</option>`)}
+              </select>
+            </${Fd}>
+          </div>
+        </${Sec}>
+        <${Sec} t="Notes">
+          <textarea style=${inp({resize:'vertical',minHeight:80})} value=${form.notes} onChange=${e=>sf('notes',e.target.value)} placeholder="Any context about this contact — where they came from, what they're interested in, specific needs…"/>
+        </${Sec}>
+      </${Card}>
+      <div style=${{display:'flex',justifyContent:'flex-end',gap:8}}>
+        <button onClick=${goBack} style=${pbtn(false,{fontSize:13,padding:'9px 20px'})}>Cancel</button>
+        <button onClick=${saveContact} disabled=${saving} style=${pbtn(true,{fontSize:13,padding:'9px 24px',fontWeight:500})}>${saving?'Saving…':'Save Contact'}</button>
+      </div>
+    </div>`;
+
+  // ── DETAIL VIEW ───────────────────────────────────────────────────
+  const detailView=det&&html`
+    <div style=${{maxWidth:960,margin:'0 auto',padding:'24px',animation:'fadeIn 0.2s ease'}}>
+      <${Card} style=${{padding:20,marginBottom:14}}>
+        <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,flexWrap:'wrap'}}>
+          <div style=${{flex:1}}>
+            <div style=${{fontSize:22,fontWeight:700,color:C.tx,marginBottom:3}}>${det.name}</div>
+            <div style=${{fontSize:13,color:C.dm,marginBottom:10}}>${[det.company,det.clientName].filter(Boolean).join(' · ')||'No client assigned'}</div>
+            <div style=${{display:'flex',flexWrap:'wrap',gap:6,alignItems:'center'}}>
+              <${StageBadge} stage=${det.stage} size="lg"/>
+              <${ScoreBadge} score=${det.score}/>
+              ${det.source&&html`<span style=${{background:C.s3,border:`0.5px solid ${C.bd}`,borderRadius:20,padding:'3px 11px',fontSize:11,color:C.dm}}>via ${det.source}</span>`}
+              ${det.dealValue&&html`<span style=${{background:`${C.ok}10`,border:`0.5px solid ${C.ok}30`,borderRadius:20,padding:'3px 11px',fontSize:11,color:C.ok}}>RM ${det.dealValue}</span>`}
+            </div>
+            ${det.scoreReason&&html`<div style=${{fontSize:12,color:C.dm,marginTop:8,fontStyle:'italic'}}>AI: "${det.scoreReason}"</div>`}
+          </div>
+          <div style=${{display:'flex',gap:7,flexWrap:'wrap',flexShrink:0}}>
+            <button onClick=${scoreWithAI} disabled=${scoring} style=${pbtn(false,{fontSize:12,padding:'6px 13px',color:C.pu,border:`0.5px solid ${C.pu}50`})}>${scoring?'Scoring…':'✦ AI Score'}</button>
+            <button onClick=${()=>{setForm({...det});setView('edit');}} style=${pbtn(false,{fontSize:12,padding:'6px 13px'})}>Edit</button>
+            <button onClick=${()=>deleteContact(det.id)} style=${pbtn(false,{fontSize:12,padding:'6px 13px',color:C.er,border:`0.5px solid ${C.er}50`})}>Delete</button>
+          </div>
+        </div>
+      </${Card}>
+
+      <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,marginBottom:14}}>
+        <${Card} style=${{padding:18}}>
+          <${Sec} t="Contact info">
+            <div style=${{display:'flex',flexDirection:'column',gap:8,fontSize:13}}>
+              ${det.email&&html`<div style=${{display:'flex',gap:10,alignItems:'center'}}><span style=${{color:C.dm,minWidth:70}}>Email</span><a href=${'mailto:'+det.email} style=${{color:C.ac,textDecoration:'none'}}>${det.email}</a></div>`}
+              ${det.phone&&html`<div style=${{display:'flex',gap:10,alignItems:'center'}}><span style=${{color:C.dm,minWidth:70}}>Phone</span><a href=${'https://wa.me/'+det.phone.replace(/\D/g,'')} target="_blank" style=${{color:C.ok,textDecoration:'none'}}>${det.phone} 💬</a></div>`}
+              ${det.company&&html`<div style=${{display:'flex',gap:10}}><span style=${{color:C.dm,minWidth:70}}>Company</span><span style=${{color:C.tx}}>${det.company}</span></div>`}
+              ${det.campaignName&&html`<div style=${{display:'flex',gap:10}}><span style=${{color:C.dm,minWidth:70}}>Campaign</span><span style=${{color:C.tx}}>${det.campaignName}</span></div>`}
+              <div style=${{display:'flex',gap:10}}><span style=${{color:C.dm,minWidth:70}}>Added</span><span style=${{color:C.tx}}>${fmtd(det.createdAt)}</span></div>
+              <div style=${{display:'flex',gap:10}}><span style=${{color:C.dm,minWidth:70}}>Last contact</span><span style=${{color:C.tx}}>${fmtrel(det.lastContactedAt)}</span></div>
+            </div>
+          </${Sec}>
+          ${det.notes&&html`<${Sec} t="Notes"><div style=${{fontSize:13,color:C.tx,lineHeight:1.65,whiteSpace:'pre-wrap'}}>${det.notes}</div></${Sec}>`}
+        </${Card}>
+        <${Card} style=${{padding:18}}>
+          <${Sec} t="Pipeline stage">
+            <div style=${{display:'flex',flexWrap:'wrap',gap:5,marginBottom:14}}>
+              ${STAGES.map(s=>html`<button key=${s} onClick=${()=>updateStage(det.id,s)} style=${{background:det.stage===s?STAGE_META[s].bg:'transparent',color:det.stage===s?STAGE_META[s].c:C.dm,border:`0.5px solid ${det.stage===s?STAGE_META[s].c:C.bd}50`,borderRadius:20,padding:'5px 13px',fontSize:12,cursor:'pointer',fontWeight:det.stage===s?600:400}}>${det.stage===s?'● ':''}${STAGE_META[s].l}</button>`)}
+            </div>
+          </${Sec}>
+          <${Sec} t="Quick actions">
+            <div style=${{display:'flex',flexDirection:'column',gap:7}}>
+              ${det.phone&&html`<a href=${'https://wa.me/'+det.phone.replace(/\D/g,'')} target="_blank" style=${{display:'flex',alignItems:'center',gap:8,padding:'9px 12px',background:C.s2,borderRadius:7,border:`0.5px solid ${C.bd}`,textDecoration:'none',color:C.tx,fontSize:13}}><span>💬</span><span>Open WhatsApp</span></a>`}
+              ${det.email&&html`<a href=${'mailto:'+det.email} style=${{display:'flex',alignItems:'center',gap:8,padding:'9px 12px',background:C.s2,borderRadius:7,border:`0.5px solid ${C.bd}`,textDecoration:'none',color:C.tx,fontSize:13}}><span>📧</span><span>Send Email</span></a>`}
+            </div>
+          </${Sec}>
+        </${Card}>
+      </div>
+
+      <${Card} style=${{padding:20,marginBottom:14}}>
+        <${Sec} t="Log activity">
+          <div style=${{display:'flex',gap:6,marginBottom:10,flexWrap:'wrap'}}>
+            ${ACTIVITY_TYPES.map(t=>html`<button key=${t} onClick=${()=>setActType(t)} style=${{background:actType===t?C.ac:C.s3,color:actType===t?'#fff':C.dm,border:`0.5px solid ${actType===t?C.ac:C.bd}`,borderRadius:20,padding:'4px 13px',fontSize:12,cursor:'pointer'}}>${ACTIVITY_ICONS[t]} ${t}</button>`)}
+          </div>
+          <div style=${{display:'flex',gap:8}}>
+            <textarea style=${inp({resize:'none',height:40,flex:1,padding:'10px 11px'})} value=${actNote} onChange=${e=>setActNote(e.target.value)} placeholder=${`Add ${actType.toLowerCase()} note…`} onKeyDown=${e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();addActivity();}}}/>
+            <button onClick=${addActivity} style=${pbtn(true,{flexShrink:0,padding:'0 16px',height:40})}>Log</button>
+          </div>
+        </${Sec}>
+        <${Sec} t=${'Activity history ('+((det.activities||[]).length)+')'}>
+          ${!(det.activities?.length)?html`<div style=${{color:C.dm,fontSize:13,textAlign:'center',padding:'16px 0'}}>No activities yet</div>`:
+          html`<div style=${{display:'flex',flexDirection:'column',gap:6,maxHeight:320,overflowY:'auto'}}>
+            ${(det.activities||[]).map(a=>html`<div key=${a.id} style=${{display:'flex',gap:10,padding:'10px 12px',background:C.s2,borderRadius:7,animation:'fadeIn 0.2s ease'}}>
+              <span style=${{fontSize:16,flexShrink:0}}>${ACTIVITY_ICONS[a.type]||'📝'}</span>
+              <div style=${{flex:1}}>
+                <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:3}}>
+                  <span style=${{fontSize:11,color:C.dm,fontWeight:500}}>${a.type}</span>
+                  <span style=${{fontSize:11,color:C.mt}}>${fmtdt(a.createdAt)}</span>
+                </div>
+                <div style=${{fontSize:13,color:C.tx,lineHeight:1.55}}>${a.note}</div>
+              </div>
+            </div>`)}
+          </div>`}
+        </${Sec}>
+      </${Card}>
+    </div>`;
+
+  // ── CONTACTS LIST ─────────────────────────────────────────────────
+  const contactsList=html`
+    <div style=${{padding:'24px',maxWidth:1200,margin:'0 auto'}}>
+      ${loading?html`<${Spinner}/>`:html`<div>
+        <div style=${{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:22}}>
+          ${[['Total contacts',stats.total,C.tx],['Hot / VIP',stats.hot,C.or],['Active clients',stats.active,C.ok],['Added this week',stats.new,C.ac]].map(([l,v,c])=>html`<div key=${l} style=${{background:C.s1,border:`0.5px solid ${C.bd}`,borderRadius:8,padding:'13px 16px'}}><div style=${{fontSize:26,fontWeight:600,color:c,lineHeight:1.1}}>${v}</div><div style=${{fontSize:12,color:C.dm,marginTop:3}}>${l}</div></div>`)}
+        </div>
+        <div style=${{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
+          <input style=${inp({flex:1,minWidth:180})} placeholder="Search name, email, company…" value=${srch} onChange=${e=>setSrch(e.target.value)}/>
+          <select style=${inp({width:'auto',minWidth:140})} value=${filterClient} onChange=${e=>setFilterClient(e.target.value)}>
+            <option value="all">All clients</option>
+            ${clients.map(c=>html`<option key=${c.id} value=${c.id}>${c.basics.brandName||c.basics.clientName}</option>`)}
+          </select>
+          <select style=${inp({width:'auto'})} value=${filterStage} onChange=${e=>setFilterStage(e.target.value)}>
+            <option value="all">All stages</option>
+            ${STAGES.map(s=>html`<option key=${s} value=${s}>${STAGE_META[s].l}</option>`)}
+          </select>
+          <select style=${inp({width:'auto'})} value=${filterScore} onChange=${e=>setFilterScore(e.target.value)}>
+            <option value="all">All scores</option>
+            ${SCORES.map(s=>html`<option key=${s} value=${s}>${SCORE_META[s].icon} ${SCORE_META[s].l}</option>`)}
+          </select>
+        </div>
+        ${filtered.length===0?html`<div style=${{textAlign:'center',padding:'60px',color:C.dm}}>
+          <div style=${{fontSize:48,marginBottom:14}}>👥</div>
+          <div style=${{fontSize:17,color:C.tx,marginBottom:6}}>${contacts.length===0?'No contacts yet':'No results'}</div>
+          ${contacts.length===0&&html`<button onClick=${()=>{setForm(blankContact());setView('new');}} style=${pbtn(true,{padding:'10px 26px',fontSize:14})}>+ Add First Contact</button>`}
+        </div>`
+        :html`<div style=${{display:'flex',flexDirection:'column',gap:8}}>
+          ${filtered.map(c=>html`<div key=${c.id} onClick=${()=>{setDet(c);setView('detail');}} style=${{background:C.s1,border:`0.5px solid ${C.bd}`,borderRadius:10,padding:'13px 18px',cursor:'pointer',transition:'border-color .15s',display:'grid',gridTemplateColumns:'auto 1fr auto',gap:'0 14px',alignItems:'center'}} onMouseEnter=${e=>e.currentTarget.style.borderColor=C.bdB} onMouseLeave=${e=>e.currentTarget.style.borderColor=C.bd}>
+            <div style=${{width:40,height:40,borderRadius:10,background:C.s3,display:'flex',alignItems:'center',justifyContent:'center',fontSize:15,fontWeight:700,color:C.dm,flexShrink:0}}>${(c.name||'?')[0].toUpperCase()}</div>
+            <div>
+              <div style=${{display:'flex',alignItems:'center',gap:7,marginBottom:4,flexWrap:'wrap'}}>
+                <span style=${{fontSize:14,fontWeight:600,color:C.tx}}>${c.name}</span>
+                <${StageBadge} stage=${c.stage}/>
+                <${ScoreBadge} score=${c.score}/>
+              </div>
+              <div style=${{fontSize:12,color:C.dm,display:'flex',gap:10,flexWrap:'wrap'}}>${[c.company,c.clientName,c.source].filter(Boolean).map((x,i)=>html`<span key=${i}>${x}</span>`)}</div>
+            </div>
+            <div style=${{textAlign:'right',flexShrink:0}}>
+              ${c.dealValue&&html`<div style=${{fontSize:12,color:C.ok,fontWeight:600,marginBottom:2}}>RM ${c.dealValue}</div>`}
+              <div style=${{fontSize:11,color:C.mt}}>${fmtrel(c.lastContactedAt||c.createdAt)}</div>
+            </div>
+          </div>`)}
+        </div>`}
+      </div>`}
+    </div>`;
+
+  // ── PIPELINE BOARD ────────────────────────────────────────────────
+  const pipelineBoard=html`
+    <div style=${{padding:'24px',overflowX:'auto'}}>
+      <div style=${{display:'flex',gap:12,minWidth:'900px',alignItems:'flex-start'}}>
+        ${STAGES.map(stage=>{
+          const cols=contacts.filter(c=>c.stage===stage);
+          const m=STAGE_META[stage];
+          return html`<div key=${stage} style=${{flex:'1 1 0',minWidth:0}}>
+            <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,padding:'8px 12px',background:m.bg,border:`0.5px solid ${m.c}40`,borderRadius:7}}>
+              <span style=${{fontSize:12,fontWeight:600,color:m.c}}>${m.l}</span>
+              <span style=${{fontSize:12,color:m.c,background:`${m.c}20`,borderRadius:10,padding:'1px 8px'}}>${cols.length}</span>
+            </div>
+            <div style=${{display:'flex',flexDirection:'column',gap:8}}>
+              ${cols.length===0?html`<div style=${{padding:'20px 12px',textAlign:'center',border:`1px dashed ${C.bd}`,borderRadius:8,color:C.mt,fontSize:12}}>Empty</div>`:
+              cols.map(c=>html`<div key=${c.id} onClick=${()=>{setDet(c);setView('detail');}} style=${{background:C.s1,border:`0.5px solid ${C.bd}`,borderRadius:8,padding:'12px',cursor:'pointer',transition:'border-color .15s',animation:'fadeIn 0.2s ease'}} onMouseEnter=${e=>e.currentTarget.style.borderColor=C.bdB} onMouseLeave=${e=>e.currentTarget.style.borderColor=C.bd}>
+                <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
+                  <div style=${{fontSize:13,fontWeight:600,color:C.tx,lineHeight:1.3}}>${c.name}</div>
+                  <${ScoreBadge} score=${c.score}/>
+                </div>
+                ${c.company&&html`<div style=${{fontSize:11,color:C.dm,marginBottom:4}}>${c.company}</div>`}
+                <div style=${{fontSize:11,color:C.mt,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                  <span>${c.clientName||'—'}</span>
+                  ${c.dealValue&&html`<span style=${{color:C.ok}}>RM ${c.dealValue}</span>`}
+                </div>
+                ${c.lastContactedAt&&html`<div style=${{fontSize:10,color:C.mt,marginTop:4}}>${fmtrel(c.lastContactedAt)}</div>`}
+              </div>`)}
+            </div>
+          </div>`;
+        })}
+      </div>
+    </div>`;
+
+  // ── EMAIL BLAST ───────────────────────────────────────────────────
+  const blastView=html`
+    <div style=${{maxWidth:860,margin:'0 auto',padding:'24px'}}>
+      <div style=${{marginBottom:20}}><div style=${{fontSize:19,fontWeight:600,color:C.tx}}>Email Blast</div><div style=${{fontSize:13,color:C.dm,marginTop:2}}>Send to a filtered segment of contacts via Resend.com</div></div>
+      ${!resendKey&&html`<div style=${{background:'#fbbf2410',border:`1px solid ${C.wn}50`,borderRadius:8,padding:'12px 16px',marginBottom:18,fontSize:13,color:C.wn}}>⚠️ Resend API key not set — go to <button onClick=${()=>setView('settings')} style=${{background:'none',border:'none',color:C.ac,cursor:'pointer',textDecoration:'underline',fontSize:13}}>Settings</button> first.</div>`}
+      <div style=${{display:'grid',gridTemplateColumns:'320px 1fr',gap:16,alignItems:'flex-start'}}>
+        <${Card} style=${{padding:18}}>
+          <${Sec} t="Target segment">
+            <div style=${{display:'flex',flexDirection:'column',gap:10}}>
+              <div><${Lb}>Client</${Lb}><select style=${inp()} value=${blastClient} onChange=${e=>setBlastClient(e.target.value)}><option value="">All clients</option>${clients.map(c=>html`<option key=${c.id} value=${c.id}>${c.basics.brandName||c.basics.clientName}</option>`)}</select></div>
+              <div><${Lb}>Stage</${Lb}><select style=${inp()} value=${blastStage} onChange=${e=>setBlastStage(e.target.value)}><option value="all">All stages</option>${STAGES.map(s=>html`<option key=${s} value=${s}>${STAGE_META[s].l}</option>`)}</select></div>
+              <div><${Lb}>Score</${Lb}><select style=${inp()} value=${blastScore} onChange=${e=>setBlastScore(e.target.value)}><option value="all">All scores</option>${SCORES.map(s=>html`<option key=${s} value=${s}>${SCORE_META[s].icon} ${SCORE_META[s].l}</option>`)}</select></div>
+            </div>
+          </${Sec}>
+          <div style=${{background:blastTargets.length>0?`${C.ok}0d`:`${C.er}0d`,border:`0.5px solid ${blastTargets.length>0?C.ok:C.er}40`,borderRadius:7,padding:'11px 14px',fontSize:13}}>
+            <span style=${{color:blastTargets.length>0?C.ok:C.dm,fontWeight:600}}>${blastTargets.length} contact${blastTargets.length!==1?'s':''}</span>
+            <span style=${{color:C.dm}}> with email match filter</span>
+          </div>
+          ${blastTargets.length>0&&html`<div style=${{marginTop:10,maxHeight:160,overflowY:'auto',display:'flex',flexDirection:'column',gap:4}}>
+            ${blastTargets.map(c=>html`<div key=${c.id} style=${{fontSize:11,color:C.dm,padding:'4px 8px',background:C.s2,borderRadius:5}}>${c.name} — ${c.email}</div>`)}
+          </div>`}
+        </${Card}>
+        <${Card} style=${{padding:18}}>
+          <${Sec} t="Compose">
+            <div style=${{display:'flex',flexDirection:'column',gap:12}}>
+              <div><${Lb}>Subject</${Lb}><input style=${inp()} value=${blastSubject} onChange=${e=>setBlastSubject(e.target.value)} placeholder="Email subject line…"/></div>
+              <div><${Lb}>Body</${Lb}><textarea style=${inp({resize:'vertical',minHeight:200})} value=${blastBody} onChange=${e=>setBlastBody(e.target.value)} placeholder="Write your email body here. Use plain text — line breaks are preserved.&#10;&#10;Hi {name},&#10;&#10;…"/></div>
+              <div style=${{display:'flex',gap:8}}>
+                <button onClick=${sendBlast} disabled=${blastSending||!blastTargets.length||!resendKey} style=${pbtn(true,{flex:1,fontWeight:500,opacity:(!blastTargets.length||!resendKey)?0.5:1})}>${blastSending?'Sending…':`Send to ${blastTargets.length} contact${blastTargets.length!==1?'s':''}`}</button>
+              </div>
+              <div style=${{fontSize:11,color:C.mt}}>Emails are sent via Resend.com through your n8n workflow. Replies go to your sender email.</div>
+            </div>
+          </${Sec}>
+        </${Card}>
+      </div>
+    </div>`;
+
+  // ── SETTINGS ──────────────────────────────────────────────────────
+  const settingsView=html`
+    <div style=${{maxWidth:680,margin:'0 auto',padding:'32px 24px'}}>
+      <div style=${{fontSize:19,fontWeight:600,color:C.tx,marginBottom:28}}>Settings</div>
+      <${Card} style=${{padding:24,marginBottom:14}}>
+        <${Sec} t="Email (Resend.com)">
+          <div style=${{display:'flex',flexDirection:'column',gap:10}}>
+            <div><${Lb}>Resend API Key</${Lb}><input style=${inp({fontFamily:'monospace',fontSize:12})} type="password" value=${resendKeyInput} onChange=${e=>setResendKeyInput(e.target.value)} placeholder="re_…"/></div>
+            <div style=${G}>
+              <div><${Lb}>Sender name</${Lb}><input style=${inp()} value=${senderName} onChange=${e=>setSenderName(e.target.value)} placeholder="Jason | OmniraAI"/></div>
+              <div><${Lb}>Sender email</${Lb}><input style=${inp()} value=${senderEmail} onChange=${e=>setSenderEmail(e.target.value)} placeholder="hello@yourdomain.com"/></div>
+            </div>
+            <button onClick=${async()=>{await Promise.all([db.setSetting('resend_key',resendKeyInput),db.setSetting('sender_email',senderEmail),db.setSetting('sender_name',senderName)]);setResendKey(resendKeyInput);showToast('Email settings saved ✓','ok');}} style=${pbtn(true,{fontSize:13,padding:'8px 20px',width:'fit-content'})}>Save Email Settings</button>
+            <div style=${{fontSize:11,color:C.mt,lineHeight:1.6}}>Get your free API key at resend.com → API Keys. Blasts are sent through n8n webhook → Resend API. The sender email must be verified in Resend.</div>
+          </div>
+        </${Sec}>
+        <${Sec} t="n8n email webhook">
+          <div style=${{padding:'10px 14px',background:C.s2,borderRadius:7,fontFamily:'monospace',fontSize:12,color:C.dm,wordBreak:'break-all'}}>${N8N_EMAIL}</div>
+          <div style=${{fontSize:11,color:C.mt,marginTop:6}}>Create an n8n workflow at this path (Webhook → Code → Resend API call → Respond). See docs for the Code node template.</div>
+        </${Sec}>
+        <${Sec} t="Data connections">
+          <div style=${{display:'flex',flexDirection:'column',gap:7}}>
+            ${[['Clients',clients.length,'Brand Manager'],['Campaigns',campaigns.length,'Campaign Builder'],['Contacts',contacts.length,'This app']].map(([l,n,src])=>html`<div key=${l} style=${{display:'flex',alignItems:'center',gap:10,padding:'9px 13px',background:C.s2,borderRadius:7}}>
+              <div style=${{width:7,height:7,borderRadius:'50%',background:n>0?C.ok:C.wn,flexShrink:0}}></div>
+              <span style=${{fontSize:13,color:C.tx,flex:1}}>${l}</span>
+              <span style=${{fontSize:12,color:C.dm}}>${n} records · ${src}</span>
+            </div>`)}
+          </div>
+        </${Sec}>
+      </${Card}>
+    </div>`;
+
+  return html`
+    <div style=${{minHeight:'100vh',background:C.bg,color:C.tx}}>
+      <style>@keyframes spin{to{transform:rotate(360deg)}}@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}</style>
+      ${hdr}
+      <div style=${{paddingBottom:48}}>
+        ${view==='contacts'&&contactsList}
+        ${view==='pipeline'&&pipelineBoard}
+        ${view==='detail'&&detailView}
+        ${(view==='new'||view==='edit')&&contactForm}
+        ${view==='blast'&&blastView}
+        ${view==='settings'&&settingsView}
+      </div>
+      ${toast&&html`<div style=${{position:'fixed',bottom:24,right:24,background:C.s1,border:`1px solid ${toastType==='ok'?C.ok:toastType==='er'?C.er:C.wn}60`,borderRadius:8,padding:'10px 18px',fontSize:13,color:C.tx,zIndex:999,maxWidth:340,animation:'fadeIn 0.2s ease'}}>${toast}</div>`}
+    </div>`;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(html`<${App}/>`);
+</script>
+</body>
+</html>
