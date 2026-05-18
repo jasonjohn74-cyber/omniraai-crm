@@ -50,6 +50,11 @@ const fmtd=d=>d?new Date(d).toLocaleDateString('en-MY',{day:'numeric',month:'sho
 const fmtdt=d=>d?new Date(d).toLocaleString('en-MY',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'—';
 const fmtrel=d=>{if(!d)return'Never';const s=Math.floor((Date.now()-new Date(d))/1000);if(s<60)return'Just now';if(s<3600)return`${Math.floor(s/60)}m ago`;if(s<86400)return`${Math.floor(s/3600)}h ago`;if(s<604800)return`${Math.floor(s/86400)}d ago`;return fmtd(d);};
 
+function parseCSV(text){const lines=text.trim().split(/\r?\n/);if(lines.length<2)return{headers:[],rows:[]};const pr=l=>{const r=[];let cur='',inQ=false;for(let i=0;i<l.length;i++){const c=l[i];if(c==='"'){if(inQ&&l[i+1]==='"'){cur+='"';i++;}else{inQ=!inQ;}}else if(c===','&&!inQ){r.push(cur.trim());cur='';}else{cur+=c;}}r.push(cur.trim());return r;};const hdrs=pr(lines[0]);const rows=lines.slice(1).filter(l=>l.trim()).map(l=>{const v=pr(l);const o={};hdrs.forEach((h,i)=>{o[h]=v[i]||'';});return o;});return{headers:hdrs,rows};}
+function normPhone(raw){if(!raw)return'';const d=raw.replace(/[\s\-\(\)\.]/g,'');if(d.startsWith('+60'))return d;if(d.startsWith('60'))return'+'+d;if(d.startsWith('0'))return'+6'+d;return d;}
+function validEmail(e){return/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e||'');}
+function detectCol(hdrs,kws){return hdrs.find(h=>kws.some(k=>h.toLowerCase().includes(k)))||null;}
+
 const STAGES=['lead','qualified','proposal','active','churned'];
 const STAGE_META={lead:{l:'Lead',c:C.dm,bg:'#27446620'},qualified:{l:'Qualified',c:C.ac,bg:'#4a86f515'},proposal:{l:'Proposal',c:C.pu,bg:'#a78bfa15'},active:{l:'Active',c:C.ok,bg:'#34d39915'},churned:{l:'Churned',c:C.er,bg:'#f8717115'}};
 const SCORES=['cold','warm','hot','vip'];
@@ -101,6 +106,12 @@ function App(){
   // activity
   const[actType,setActType]=useState('Note');
   const[actNote,setActNote]=useState('');
+  // import
+  const[importRows,setImportRows]=useState([]);
+  const[importClientId,setImportClientId]=useState('');
+  const[importClientName,setImportClientName]=useState('');
+  const[importing,setImporting]=useState(false);
+  const[importResult,setImportResult]=useState(null);
 
   useEffect(()=>{(async()=>{
     const p=await db.getSetting('pin');if(p)setSavedPin(p);else setPmode('create');
@@ -148,6 +159,58 @@ function App(){
     if(view==='detail'){setDet(record);setView('detail');}
     else{setView(det?'detail':'contacts');setForm(null);}
     showToast(view==='new'?'Contact added ✓ (syncing to Brevo…)':'Changes saved ✓ (syncing to Brevo…)','ok');
+  }
+
+  function handleCSV(e){
+    const file=e.target.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      const{headers,rows}=parseCSV(ev.target.result);
+      const colName=detectCol(headers,['name','full name','contact name']);
+      const colEmail=detectCol(headers,['email']);
+      const colPhone=detectCol(headers,['phone','contact','mobile','number','whatsapp']);
+      const colTitan=detectCol(headers,['titan','machine','before','used']);
+      const colTs=detectCol(headers,['timestamp','date','time','created']);
+      const existingEmails=new Set(contacts.map(c=>(c.email||'').toLowerCase()));
+      const csvEmails=new Set();
+      const parsed=rows.map(row=>{
+        const name=(colName?row[colName]:'').trim();
+        const email=(colEmail?row[colEmail]:'').trim().toLowerCase();
+        const phone=normPhone(colPhone?row[colPhone]:'');
+        const titanRaw=(colTitan?row[colTitan]:'').trim().toLowerCase();
+        const titan=titanRaw.startsWith('y')?'yes':titanRaw.startsWith('n')?'no':'';
+        const tsRaw=colTs?row[colTs]:'';
+        let createdAt=now();if(tsRaw){const d=new Date(tsRaw);if(!isNaN(d))createdAt=d.toISOString();}
+        const issues=[];let status='ok';
+        if(!name){issues.push('Name missing');status='error';}
+        if(!email){issues.push('Email missing');status='error';}
+        else if(!validEmail(email)){issues.push('Invalid email');status='error';}
+        else if(existingEmails.has(email)){issues.push('Already in CRM');status='skip';}
+        else if(csvEmails.has(email)){issues.push('Duplicate in CSV');status='skip';}
+        else{csvEmails.add(email);}
+        if(phone&&(phone.length<10||phone.length>16)){issues.push('Phone may be invalid');if(status==='ok')status='warn';}
+        const score=titan==='yes'?'warm':'cold';
+        return{name,email,phone,titan,score,createdAt,status,issues};
+      });
+      setImportRows(parsed);
+    };
+    reader.readAsText(file);
+  }
+
+  async function runImport(){
+    const valid=importRows.filter(r=>r.status==='ok'||r.status==='warn');
+    if(!valid.length){showToast('No valid rows to import','er');return;}
+    if(!importClientId){showToast('Select a client first','er');return;}
+    setImporting(true);
+    let done=0,failed=0;
+    for(const r of valid){
+      const contact={...blankContact(),id:uid(),name:r.name,email:r.email,phone:r.phone,clientId:importClientId,clientName:importClientName,track:'B2C',stage:'lead',score:r.score,scoreReason:r.titan==='yes'?'Existing Titan user':'New to Titan',createdAt:r.createdAt,updatedAt:now(),notes:r.titan?`Titan user before: ${r.titan}`:''};
+      try{await db.upsertContact(contact);brevoSync(contact);done++;}catch(e){failed++;}
+    }
+    const co=await db.getContacts();setContacts(co);
+    setImporting(false);
+    setImportResult({done,failed,skipped:importRows.filter(r=>r.status==='skip'||r.status==='error').length});
+    showToast(`Imported ${done} contacts ✓`,'ok');
   }
 
   async function deleteContact(id){
@@ -289,8 +352,8 @@ REASON: [One sentence explanation]`;
       <div style=${{display:'flex',gap:4,alignItems:'center'}}>
         ${(view==='new'||view==='edit')&&html`<button onClick=${goBack} style=${pbtn(false,{fontSize:12,padding:'5px 12px'})}>← Back</button>`}
         ${view==='detail'&&html`<button onClick=${goBack} style=${pbtn(false,{fontSize:12,padding:'5px 12px'})}>← Back</button>`}
-        ${['contacts','pipeline','blast','settings'].map(v=>html`<button key=${v} onClick=${()=>setView(v)} style=${{...pbtn(view===v),fontSize:12,padding:'5px 12px',background:view===v?C.ac:'transparent'}}>
-          ${{contacts:'Contacts',pipeline:'Pipeline',blast:'📧 Blast',settings:'⚙'}[v]}
+        ${['contacts','pipeline','blast','import','settings'].map(v=>html`<button key=${v} onClick=${()=>setView(v)} style=${{...pbtn(view===v),fontSize:12,padding:'5px 12px',background:view===v?C.ac:'transparent'}}>
+          ${{contacts:'Contacts',pipeline:'Pipeline',blast:'📧 Blast',import:'⬆ Import',settings:'⚙'}[v]}
         </button>`)}
         ${(view==='contacts'||view==='pipeline')&&html`<button onClick=${()=>{setForm(blankContact());setView('new');}} style=${pbtn(true,{fontSize:12,padding:'5px 14px',fontWeight:500})}>+ Add Contact</button>`}
       </div>
@@ -589,6 +652,105 @@ REASON: [One sentence explanation]`;
       </${Card}>
     </div>`;
 
+  const SC={ok:C.ok,warn:C.wn,skip:C.dm,error:C.er};
+  const SL={ok:'Ready',warn:'Warning',skip:'Skip',error:'Error'};
+  const importView=html`
+    <div style=${{maxWidth:920,margin:'0 auto',padding:'24px',animation:'fadeIn 0.2s ease'}}>
+      <div style=${{marginBottom:18}}>
+        <div style=${{fontSize:19,fontWeight:600,color:C.tx}}>CSV Import</div>
+        <div style=${{fontSize:13,color:C.dm,marginTop:3}}>Bulk import contacts from Google Sheets. Validates emails, normalises Malaysian phone numbers, auto-scores by Titan usage, skips duplicates.</div>
+      </div>
+      ${importResult?html`
+        <${Card} style=${{padding:40,textAlign:'center'}}>
+          <div style=${{fontSize:36,marginBottom:12}}>✅</div>
+          <div style=${{fontSize:20,fontWeight:600,color:C.ok,marginBottom:8}}>Import complete</div>
+          <div style=${{fontSize:14,color:C.dm,marginBottom:24}}>
+            <strong style=${{color:C.ok}}>${importResult.done}</strong> imported · <strong style=${{color:C.dm}}>${importResult.skipped}</strong> skipped / errored · <strong style=${{color:importResult.failed>0?C.er:C.dm}}>${importResult.failed}</strong> failed
+          </div>
+          <div style=${{fontSize:12,color:C.dm,marginBottom:24}}>All imported contacts have been auto-synced to Brevo Titan B2C list.</div>
+          <button style=${pbtn(true,{padding:'9px 24px'})} onClick=${()=>{setImportRows([]);setImportResult(null);}}>Import another file</button>
+        </${Card}>
+      `:importRows.length===0?html`
+        <${Card} style=${{padding:24,marginBottom:14}}>
+          <${Sec} t="1 — Select client for these contacts">
+            <select style=${inp({maxWidth:380})} value=${importClientId} onChange=${e=>{const c=clients.find(x=>x.id===e.target.value);setImportClientId(e.target.value);setImportClientName(c?.basics?.brandName||c?.basics?.clientName||'');}}>
+              <option value="">Select client…</option>
+              ${clients.map(c=>html`<option key=${c.id} value=${c.id}>${c.basics.brandName||c.basics.clientName}</option>`)}
+            </select>
+          </${Sec}>
+          <${Sec} t="2 — Upload CSV file">
+            <div style=${{fontSize:12,color:C.dm,marginBottom:14,lineHeight:1.8}}>
+              Export from Google Sheets: <strong style=${{color:C.tx}}>File → Download → Comma-separated values (.csv)</strong><br/>
+              Expected columns: <span style=${{color:C.tx}}>Timestamp · Email Address · Name · Contact Number · Have you used a Titan ball machine before</span>
+            </div>
+            <label style=${{display:'block',border:`1.5px dashed ${C.bdB}`,borderRadius:10,padding:'40px 24px',textAlign:'center',cursor:'pointer',background:C.s2}}>
+              <div style=${{fontSize:30,marginBottom:10}}>📂</div>
+              <div style=${{fontSize:14,color:C.tx,fontWeight:500,marginBottom:4}}>Click to upload CSV</div>
+              <div style=${{fontSize:12,color:C.dm}}>Headers must be in row 1</div>
+              <input type="file" accept=".csv,.txt" style=${{display:'none'}} onChange=${handleCSV}/>
+            </label>
+          </${Sec}>
+        </${Card}>
+      `:html`
+        ${(()=>{
+          const valid=importRows.filter(r=>r.status==='ok'||r.status==='warn');
+          const skip=importRows.filter(r=>r.status==='skip');
+          const err=importRows.filter(r=>r.status==='error');
+          return html`
+            <${Card} style=${{padding:18}}>
+              <div style=${{display:'flex',gap:12,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
+                <div style=${{background:`${C.ok}15`,border:`0.5px solid ${C.ok}40`,borderRadius:8,padding:'10px 18px',textAlign:'center',minWidth:80}}>
+                  <div style=${{fontSize:22,fontWeight:700,color:C.ok}}>${valid.length}</div>
+                  <div style=${{fontSize:11,color:C.dm}}>Will import</div>
+                </div>
+                <div style=${{background:`${C.dm}15`,border:`0.5px solid ${C.dm}40`,borderRadius:8,padding:'10px 18px',textAlign:'center',minWidth:80}}>
+                  <div style=${{fontSize:22,fontWeight:700,color:C.dm}}>${skip.length}</div>
+                  <div style=${{fontSize:11,color:C.dm}}>Skipped</div>
+                </div>
+                <div style=${{background:`${C.er}15`,border:`0.5px solid ${C.er}40`,borderRadius:8,padding:'10px 18px',textAlign:'center',minWidth:80}}>
+                  <div style=${{fontSize:22,fontWeight:700,color:C.er}}>${err.length}</div>
+                  <div style=${{fontSize:11,color:C.dm}}>Errors</div>
+                </div>
+                <div style=${{flex:1,display:'flex',gap:8,justifyContent:'flex-end',flexWrap:'wrap'}}>
+                  <button style=${pbtn(false,{fontSize:12,padding:'7px 14px'})} onClick=${()=>setImportRows([])}>← Different file</button>
+                  <button style=${pbtn(true,{fontSize:13,padding:'8px 22px',fontWeight:500,opacity:(!valid.length||!importClientId||importing)?0.5:1})} disabled=${importing||!valid.length||!importClientId} onClick=${runImport}>
+                    ${importing?'Importing…':`Import ${valid.length} contacts →`}
+                  </button>
+                </div>
+              </div>
+              ${!importClientId&&html`<div style=${{fontSize:12,color:C.wn,marginBottom:12}}>⚠ Go back and select a client before importing.</div>`}
+              <div style=${{overflowX:'auto'}}>
+                <table style=${{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                  <thead>
+                    <tr style=${{borderBottom:`1px solid ${C.bd}`}}>
+                      ${['Status','Name','Email','Phone','Titan User','Score','Notes'].map(h=>html`<th key=${h} style=${{padding:'6px 10px',textAlign:'left',color:C.dm,fontWeight:500,whiteSpace:'nowrap'}}>${h}</th>`)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${importRows.map((r,i)=>html`
+                      <tr key=${i} style=${{borderBottom:`0.5px solid ${C.bd}20`,background:i%2?`${C.s2}50`:'transparent'}}>
+                        <td style=${{padding:'5px 10px'}}>
+                          <span style=${{background:`${SC[r.status]}15`,color:SC[r.status],border:`0.5px solid ${SC[r.status]}40`,borderRadius:20,padding:'2px 8px',fontSize:10,whiteSpace:'nowrap'}}>${SL[r.status]}</span>
+                        </td>
+                        <td style=${{padding:'5px 10px',color:r.name?C.tx:C.er}}>${r.name||'—'}</td>
+                        <td style=${{padding:'5px 10px',color:validEmail(r.email)?C.tx:C.er}}>${r.email||'—'}</td>
+                        <td style=${{padding:'5px 10px',color:C.dm,whiteSpace:'nowrap'}}>${r.phone||'—'}</td>
+                        <td style=${{padding:'5px 10px',color:r.titan==='yes'?C.ok:C.dm}}>${r.titan||'—'}</td>
+                        <td style=${{padding:'5px 10px',whiteSpace:'nowrap'}}>
+                          <span style=${{color:r.score==='warm'?C.wn:C.dm}}>${r.score==='warm'?'🔥 Warm':'🧊 Cold'}</span>
+                        </td>
+                        <td style=${{padding:'5px 10px',color:C.dm}}>${r.issues.join(', ')||'—'}</td>
+                      </tr>
+                    `)}
+                  </tbody>
+                </table>
+              </div>
+            </${Card}>
+          `;
+        })()}
+      `}
+    </div>`;
+
   return html`
     <div style=${{minHeight:'100vh',background:C.bg,color:C.tx}}>
       <style>@keyframes spin{to{transform:rotate(360deg)}}@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}</style>
@@ -599,6 +761,7 @@ REASON: [One sentence explanation]`;
         ${view==='detail'&&detailView}
         ${(view==='new'||view==='edit')&&contactForm}
         ${view==='blast'&&blastView}
+        ${view==='import'&&importView}
         ${view==='settings'&&settingsView}
       </div>
       ${toast&&html`<div style=${{position:'fixed',bottom:24,right:24,background:C.s1,border:`1px solid ${toastType==='ok'?C.ok:toastType==='er'?C.er:C.wn}60`,borderRadius:8,padding:'10px 18px',fontSize:13,color:C.tx,zIndex:999,maxWidth:340,animation:'fadeIn 0.2s ease'}}>${toast}</div>`}
