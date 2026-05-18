@@ -29,6 +29,7 @@ const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZ
 const SBH={'apikey':SB_KEY,'Authorization':`Bearer ${SB_KEY}`,'Content-Type':'application/json'};
 const N8N_PROXY='https://n8n-y8wq-production.up.railway.app/webhook/claude-proxy';
 const N8N_EMAIL='https://n8n-y8wq-production.up.railway.app/webhook/send-email';
+const N8N_BREVO='https://n8n-y8wq-production.up.railway.app/webhook/brevo-sync';
 
 const db={
   async getSetting(k){try{const r=await fetch(`${SB_URL}/rest/v1/settings?key=eq.${k}&select=value`,{headers:SBH});const d=await r.json();return d[0]?.value||null;}catch{return null;}},
@@ -58,7 +59,7 @@ const ACTIVITY_TYPES=['Note','Call','Email','WhatsApp','Meeting'];
 const ACTIVITY_ICONS={Note:'📝',Call:'📞',Email:'📧',WhatsApp:'💬',Meeting:'🤝'};
 
 function blankContact(){
-  return {id:uid(),createdAt:now(),updatedAt:now(),clientId:'',clientName:'',campaignId:'',campaignName:'',name:'',email:'',phone:'',company:'',source:'',stage:'lead',score:'cold',dealValue:'',notes:'',tags:[],activities:[],lastContactedAt:null,scoreReason:''};
+  return {id:uid(),createdAt:now(),updatedAt:now(),clientId:'',clientName:'',campaignId:'',campaignName:'',name:'',email:'',phone:'',company:'',source:'',track:'B2C',stage:'lead',score:'cold',dealValue:'',notes:'',tags:[],activities:[],lastContactedAt:null,scoreReason:''};
 }
 
 function StageBadge({stage,size='sm'}){const m=STAGE_META[stage]||STAGE_META.lead;return html`<span style=${{background:m.bg,color:m.c,border:`0.5px solid ${m.c}50`,borderRadius:20,padding:size==='lg'?'4px 14px':'2px 10px',fontSize:size==='lg'?12:11,fontWeight:500,whiteSpace:'nowrap'}}>${m.l}</span>`;}
@@ -129,16 +130,24 @@ function App(){
     sf('clientId',id);sf('clientName',c.basics.brandName||c.basics.clientName);
   }
 
+  async function brevoSync(contact){
+    if(!contact.email)return;
+    try{
+      await fetch(N8N_BREVO,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(contact)});
+    }catch(e){console.warn('Brevo sync failed:',e.message);}
+  }
+
   async function saveContact(){
     if(!form.name.trim()){showToast('Contact name required','er');return;}
     setSaving(true);
     const record={...form,updatedAt:now()};
     await db.upsertContact(record);
+    brevoSync(record);
     const co=await db.getContacts();setContacts(co);
     setSaving(false);
     if(view==='detail'){setDet(record);setView('detail');}
     else{setView(det?'detail':'contacts');setForm(null);}
-    showToast(view==='new'?'Contact added ✓':'Changes saved ✓','ok');
+    showToast(view==='new'?'Contact added ✓ (syncing to Brevo…)':'Changes saved ✓ (syncing to Brevo…)','ok');
   }
 
   async function deleteContact(id){
@@ -314,6 +323,12 @@ REASON: [One sentence explanation]`;
                 ${SOURCES.map(s=>html`<option key=${s} value=${s}>${s}</option>`)}
               </select>
             </${Fd}>
+            <${Fd} label="Track (audience type)">
+              <select style=${inp()} value=${form.track||'B2C'} onChange=${e=>sf('track',e.target.value)}>
+                <option value="B2C">B2C — Individual / Consumer</option>
+                <option value="B2B">B2B — Business / Corporate</option>
+              </select>
+            </${Fd}>
             <${Fd} label="Stage">
               <select style=${inp()} value=${form.stage} onChange=${e=>sf('stage',e.target.value)}>
                 ${STAGES.map(s=>html`<option key=${s} value=${s}>${STAGE_META[s].l}</option>`)}
@@ -356,6 +371,7 @@ REASON: [One sentence explanation]`;
             <div style=${{display:'flex',flexWrap:'wrap',gap:6,alignItems:'center'}}>
               <${StageBadge} stage=${det.stage} size="lg"/>
               <${ScoreBadge} score=${det.score}/>
+              ${det.track&&html`<span style=${{background:det.track==='B2B'?`${C.pu}15`:`${C.tl}15`,border:`0.5px solid ${det.track==='B2B'?C.pu:C.tl}40`,borderRadius:20,padding:'3px 11px',fontSize:11,color:det.track==='B2B'?C.pu:C.tl}}>${det.track}</span>`}
               ${det.source&&html`<span style=${{background:C.s3,border:`0.5px solid ${C.bd}`,borderRadius:20,padding:'3px 11px',fontSize:11,color:C.dm}}>via ${det.source}</span>`}
               ${det.dealValue&&html`<span style=${{background:`${C.ok}10`,border:`0.5px solid ${C.ok}30`,borderRadius:20,padding:'3px 11px',fontSize:11,color:C.ok}}>RM ${det.dealValue}</span>`}
             </div>
@@ -461,6 +477,7 @@ REASON: [One sentence explanation]`;
                 <span style=${{fontSize:14,fontWeight:600,color:C.tx}}>${c.name}</span>
                 <${StageBadge} stage=${c.stage}/>
                 <${ScoreBadge} score=${c.score}/>
+                ${c.track&&html`<span style=${{background:c.track==='B2B'?`${C.pu}15`:`${C.tl}15`,border:`0.5px solid ${c.track==='B2B'?C.pu:C.tl}40`,borderRadius:20,padding:'1px 8px',fontSize:10,color:c.track==='B2B'?C.pu:C.tl}}>${c.track}</span>`}
               </div>
               <div style=${{fontSize:12,color:C.dm,display:'flex',gap:10,flexWrap:'wrap'}}>${[c.company,c.clientName,c.source].filter(Boolean).map((x,i)=>html`<span key=${i}>${x}</span>`)}</div>
             </div>
