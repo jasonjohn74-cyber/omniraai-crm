@@ -51,7 +51,7 @@ const fmtdt=d=>d?new Date(d).toLocaleString('en-MY',{day:'numeric',month:'short'
 const fmtrel=d=>{if(!d)return'Never';const s=Math.floor((Date.now()-new Date(d))/1000);if(s<60)return'Just now';if(s<3600)return`${Math.floor(s/60)}m ago`;if(s<86400)return`${Math.floor(s/3600)}h ago`;if(s<604800)return`${Math.floor(s/86400)}d ago`;return fmtd(d);};
 
 function parseCSV(text){const lines=text.trim().split(/\r?\n/);if(lines.length<2)return{headers:[],rows:[]};const pr=l=>{const r=[];let cur='',inQ=false;for(let i=0;i<l.length;i++){const c=l[i];if(c==='"'){if(inQ&&l[i+1]==='"'){cur+='"';i++;}else{inQ=!inQ;}}else if(c===','&&!inQ){r.push(cur.trim());cur='';}else{cur+=c;}}r.push(cur.trim());return r;};const hdrs=pr(lines[0]);const rows=lines.slice(1).filter(l=>l.trim()).map(l=>{const v=pr(l);const o={};hdrs.forEach((h,i)=>{o[h]=v[i]||'';});return o;});return{headers:hdrs,rows};}
-function normPhone(raw){if(!raw)return'';const d=raw.replace(/[\s\-\(\)\.]/g,'');if(d.startsWith('+60'))return d;if(d.startsWith('60'))return'+'+d;if(d.startsWith('0'))return'+6'+d;return d;}
+function normPhone(raw){if(!raw)return'';const d=raw.replace(/[\s\-\(\)\.]/g,'');if(d.startsWith('+60'))return d;if(d.startsWith('60'))return'+'+d;if(d.startsWith('0'))return'+6'+d;if(/^1[0-9]{7,10}$/.test(d))return'+60'+d;return d;}
 function validEmail(e){return/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e||'');}
 function detectCol(hdrs,kws){return hdrs.find(h=>kws.some(k=>h.toLowerCase().includes(k)))||null;}
 
@@ -170,6 +170,7 @@ function App(){
       const colEmail=detectCol(headers,['email']);
       const colPhone=detectCol(headers,['phone','contact','mobile','number','whatsapp']);
       const colTitan=detectCol(headers,['titan','machine','before','used']);
+      const colConsent=detectCol(headers,['communic','receive','consent','opt','future']);
       const colTs=detectCol(headers,['timestamp','date','time','created']);
       const existingEmails=new Set(contacts.map(c=>(c.email||'').toLowerCase()));
       const csvEmails=new Set();
@@ -179,6 +180,8 @@ function App(){
         const phone=normPhone(colPhone?row[colPhone]:'');
         const titanRaw=(colTitan?row[colTitan]:'').trim().toLowerCase();
         const titan=titanRaw.startsWith('y')?'yes':titanRaw.startsWith('n')?'no':'';
+        const consentRaw=(colConsent?row[colConsent]:'').trim().toLowerCase();
+        const consent=consentRaw.startsWith('y')?'yes':consentRaw.startsWith('n')?'no':'unknown';
         const tsRaw=colTs?row[colTs]:'';
         let createdAt=now();if(tsRaw){const d=new Date(tsRaw);if(!isNaN(d))createdAt=d.toISOString();}
         const issues=[];let status='ok';
@@ -189,8 +192,9 @@ function App(){
         else if(csvEmails.has(email)){issues.push('Duplicate in CSV');status='skip';}
         else{csvEmails.add(email);}
         if(phone&&(phone.length<10||phone.length>16)){issues.push('Phone may be invalid');if(status==='ok')status='warn';}
+        if(consent==='no'){issues.push('No marketing consent (PDPA)');if(status==='ok')status='warn';}
         const score=titan==='yes'?'warm':'cold';
-        return{name,email,phone,titan,score,createdAt,status,issues};
+        return{name,email,phone,titan,consent,score,createdAt,status,issues};
       });
       setImportRows(parsed);
     };
@@ -204,7 +208,7 @@ function App(){
     setImporting(true);
     let done=0,failed=0;
     for(const r of valid){
-      const contact={...blankContact(),id:uid(),name:r.name,email:r.email,phone:r.phone,clientId:importClientId,clientName:importClientName,track:'B2C',stage:'lead',score:r.score,scoreReason:r.titan==='yes'?'Existing Titan user':'New to Titan',createdAt:r.createdAt,updatedAt:now(),notes:r.titan?`Titan user before: ${r.titan}`:''};
+      const contact={...blankContact(),id:uid(),name:r.name,email:r.email,phone:r.phone,clientId:importClientId,clientName:importClientName,track:'B2C',stage:'lead',score:r.score,scoreReason:r.titan==='yes'?'Existing Titan user':'New to Titan',createdAt:r.createdAt,updatedAt:now(),notes:[r.titan?`Titan user: ${r.titan}`:'',`PDPA consent: ${r.consent}`].filter(Boolean).join(' | ')};
       try{await db.upsertContact(contact);brevoSync(contact);done++;}catch(e){failed++;}
     }
     const co=await db.getContacts();setContacts(co);
@@ -723,7 +727,7 @@ REASON: [One sentence explanation]`;
                 <table style=${{width:'100%',borderCollapse:'collapse',fontSize:12}}>
                   <thead>
                     <tr style=${{borderBottom:`1px solid ${C.bd}`}}>
-                      ${['Status','Name','Email','Phone','Titan User','Score','Notes'].map(h=>html`<th key=${h} style=${{padding:'6px 10px',textAlign:'left',color:C.dm,fontWeight:500,whiteSpace:'nowrap'}}>${h}</th>`)}
+                      ${['Status','Name','Email','Phone','Titan User','Consent','Score','Notes'].map(h=>html`<th key=${h} style=${{padding:'6px 10px',textAlign:'left',color:C.dm,fontWeight:500,whiteSpace:'nowrap'}}>${h}</th>`)}
                     </tr>
                   </thead>
                   <tbody>
@@ -736,6 +740,9 @@ REASON: [One sentence explanation]`;
                         <td style=${{padding:'5px 10px',color:validEmail(r.email)?C.tx:C.er}}>${r.email||'—'}</td>
                         <td style=${{padding:'5px 10px',color:C.dm,whiteSpace:'nowrap'}}>${r.phone||'—'}</td>
                         <td style=${{padding:'5px 10px',color:r.titan==='yes'?C.ok:C.dm}}>${r.titan||'—'}</td>
+                        <td style=${{padding:'5px 10px',whiteSpace:'nowrap'}}>
+                          <span style=${{color:r.consent==='yes'?C.ok:r.consent==='no'?C.er:C.dm}}>${r.consent==='yes'?'✓ Yes':r.consent==='no'?'✗ No':'—'}</span>
+                        </td>
                         <td style=${{padding:'5px 10px',whiteSpace:'nowrap'}}>
                           <span style=${{color:r.score==='warm'?C.wn:C.dm}}>${r.score==='warm'?'🔥 Warm':'🧊 Cold'}</span>
                         </td>
