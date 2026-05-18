@@ -94,10 +94,7 @@ function App(){
   const[blastBody,setBlastBody]=useState('');
   const[blastFrom,setBlastFrom]=useState('');
   const[blastSending,setBlastSending]=useState(false);
-  const[blastPreview,setBlastPreview]=useState(false);
   // settings
-  const[resendKey,setResendKey]=useState('');
-  const[resendKeyInput,setResendKeyInput]=useState('');
   const[senderEmail,setSenderEmail]=useState('');
   const[senderName,setSenderName]=useState('');
   // activity
@@ -106,7 +103,6 @@ function App(){
 
   useEffect(()=>{(async()=>{
     const p=await db.getSetting('pin');if(p)setSavedPin(p);else setPmode('create');
-    const rk=await db.getSetting('resend_key');if(rk){setResendKey(rk);setResendKeyInput(rk);}
     const se=await db.getSetting('sender_email');if(se)setSenderEmail(se);
     const sn=await db.getSetting('sender_name');if(sn)setSenderName(sn);
     const cl=await db.getClients();setClients(cl);
@@ -226,15 +222,12 @@ REASON: [One sentence explanation]`;
   async function sendBlast(){
     if(!blastTargets.length){showToast('No contacts with email match this filter','er');return;}
     if(!blastSubject.trim()||!blastBody.trim()){showToast('Subject and body required','er');return;}
-    if(!resendKey){showToast('Add Resend API key in Settings first','er');return;}
-    if(!senderEmail){showToast('Set sender email in Settings first','er');return;}
     if(!confirm(`Send to ${blastTargets.length} contact${blastTargets.length>1?'s':''}?`))return;
     setBlastSending(true);
     try{
       const res=await fetch(N8N_EMAIL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-        resend_key:resendKey,
         from_name:senderName||'OmniraAI',
-        from_email:senderEmail,
+        from_email:senderEmail||'onboarding@resend.dev',
         to:blastTargets.map(c=>c.email),
         subject:blastSubject,
         body_html:blastBody.replace(/\n/g,'<br/>'),
@@ -516,7 +509,6 @@ REASON: [One sentence explanation]`;
   const blastView=html`
     <div style=${{maxWidth:860,margin:'0 auto',padding:'24px'}}>
       <div style=${{marginBottom:20}}><div style=${{fontSize:19,fontWeight:600,color:C.tx}}>Email Blast</div><div style=${{fontSize:13,color:C.dm,marginTop:2}}>Send to a filtered segment of contacts via Resend.com</div></div>
-      ${!resendKey&&html`<div style=${{background:'#fbbf2410',border:`1px solid ${C.wn}50`,borderRadius:8,padding:'12px 16px',marginBottom:18,fontSize:13,color:C.wn}}>⚠️ Resend API key not set — go to <button onClick=${()=>setView('settings')} style=${{background:'none',border:'none',color:C.ac,cursor:'pointer',textDecoration:'underline',fontSize:13}}>Settings</button> first.</div>`}
       <div style=${{display:'grid',gridTemplateColumns:'320px 1fr',gap:16,alignItems:'flex-start'}}>
         <${Card} style=${{padding:18}}>
           <${Sec} t="Target segment">
@@ -540,7 +532,7 @@ REASON: [One sentence explanation]`;
               <div><${Lb}>Subject</${Lb}><input style=${inp()} value=${blastSubject} onChange=${e=>setBlastSubject(e.target.value)} placeholder="Email subject line…"/></div>
               <div><${Lb}>Body</${Lb}><textarea style=${inp({resize:'vertical',minHeight:200})} value=${blastBody} onChange=${e=>setBlastBody(e.target.value)} placeholder="Write your email body here. Use plain text — line breaks are preserved.&#10;&#10;Hi {name},&#10;&#10;…"/></div>
               <div style=${{display:'flex',gap:8}}>
-                <button onClick=${sendBlast} disabled=${blastSending||!blastTargets.length||!resendKey} style=${pbtn(true,{flex:1,fontWeight:500,opacity:(!blastTargets.length||!resendKey)?0.5:1})}>${blastSending?'Sending…':`Send to ${blastTargets.length} contact${blastTargets.length!==1?'s':''}`}</button>
+                <button onClick=${sendBlast} disabled=${blastSending||!blastTargets.length} style=${pbtn(true,{flex:1,fontWeight:500,opacity:!blastTargets.length?0.5:1})}>${blastSending?'Sending…':`Send to ${blastTargets.length} contact${blastTargets.length!==1?'s':''}`}</button>
               </div>
               <div style=${{fontSize:11,color:C.mt}}>Emails are sent via Resend.com through your n8n workflow. Replies go to your sender email.</div>
             </div>
@@ -554,15 +546,14 @@ REASON: [One sentence explanation]`;
     <div style=${{maxWidth:680,margin:'0 auto',padding:'32px 24px'}}>
       <div style=${{fontSize:19,fontWeight:600,color:C.tx,marginBottom:28}}>Settings</div>
       <${Card} style=${{padding:24,marginBottom:14}}>
-        <${Sec} t="Email (Resend.com)">
+        <${Sec} t="Email sender (Resend.com)">
           <div style=${{display:'flex',flexDirection:'column',gap:10}}>
-            <div><${Lb}>Resend API Key</${Lb}><input style=${inp({fontFamily:'monospace',fontSize:12})} type="password" value=${resendKeyInput} onChange=${e=>setResendKeyInput(e.target.value)} placeholder="re_…"/></div>
             <div style=${G}>
               <div><${Lb}>Sender name</${Lb}><input style=${inp()} value=${senderName} onChange=${e=>setSenderName(e.target.value)} placeholder="Jason | OmniraAI"/></div>
-              <div><${Lb}>Sender email</${Lb}><input style=${inp()} value=${senderEmail} onChange=${e=>setSenderEmail(e.target.value)} placeholder="hello@yourdomain.com"/></div>
+              <div><${Lb}>Sender email</${Lb}><input style=${inp()} value=${senderEmail} onChange=${e=>setSenderEmail(e.target.value)} placeholder="onboarding@resend.dev"/></div>
             </div>
-            <button onClick=${async()=>{await Promise.all([db.setSetting('resend_key',resendKeyInput),db.setSetting('sender_email',senderEmail),db.setSetting('sender_name',senderName)]);setResendKey(resendKeyInput);showToast('Email settings saved ✓','ok');}} style=${pbtn(true,{fontSize:13,padding:'8px 20px',width:'fit-content'})}>Save Email Settings</button>
-            <div style=${{fontSize:11,color:C.mt,lineHeight:1.6}}>Get your free API key at resend.com → API Keys. Blasts are sent through n8n webhook → Resend API. The sender email must be verified in Resend.</div>
+            <button onClick=${async()=>{await Promise.all([db.setSetting('sender_email',senderEmail),db.setSetting('sender_name',senderName)]);showToast('Email settings saved ✓','ok');}} style=${pbtn(true,{fontSize:13,padding:'8px 20px',width:'fit-content'})}>Save</button>
+            <div style=${{fontSize:11,color:C.mt,lineHeight:1.6}}>API key is stored securely in n8n. Use <span style=${{color:C.tx}}>onboarding@resend.dev</span> until you verify a custom domain in Resend → Domains.</div>
           </div>
         </${Sec}>
         <${Sec} t="n8n email webhook">
